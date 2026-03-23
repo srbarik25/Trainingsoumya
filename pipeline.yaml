@@ -1,0 +1,159 @@
+name: deployment
+on:
+  workflow_dispatch: # Allows manual triggering
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'develop'
+        type: choice
+        options:
+          - develop
+          - sandbox
+          - training
+permissions:
+  id-token: write # Required for OIDC authentication
+  contents: read # Default for accessing the repo
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      pending-changes: ${{ steps.plan.outputs.pending-changes }}
+    steps:
+    - name: Set environment variables
+      run: |
+        if [ "${{ github.event.inputs.environment }}" == "develop" ]; then
+          echo "AWS_ROLE=${{ secrets.AWS_ROLE_DEVELOP }}" >> $GITHUB_ENV
+        elif [ "${{ github.event.inputs.environment }}" == "sandbox" ]; then
+          echo "AWS_ROLE=${{ secrets.AWS_ROLE_SANDBOX }}" >> $GITHUB_ENV
+        elif [ "${{ github.event.inputs.environment }}" == "training" ]; then
+          echo "AWS_ROLE=${{ secrets.AWS_ROLE_TRAINING }}" >> $GITHUB_ENV
+        fi
+    - name: Check branch for environment
+      run: |
+        if [ "${{ github.event.inputs.environment }}" == "develop" ] && [ "${{ github.ref }}" != "refs/heads/develop" ]; then
+          echo "You can only deploy the develop branch to the develop environment."
+          exit 1
+        elif [ "${{ github.event.inputs.environment }}" == "sandbox" ] && [ "${{ github.ref }}" != "refs/heads/sandbox" ]; then
+          echo "You can only deploy the sandbox branch to the sandbox environment."
+          exit 1
+        elif [ "${{ github.event.inputs.environment }}" == "training" ] && [ "${{ github.ref }}" != "refs/heads/training" ]; then
+          echo "You can only deploy the training branch to the training environment."
+          exit 1
+        fi
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v3
+      with:
+        role-to-assume: ${{ env.AWS_ROLE }}
+        aws-region: ${{ secrets.AWS_REGION }}
+        mask-aws-account-id: true
+    - name: Checkout
+      uses: actions/checkout@v3
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.9.0
+        terraform_wrapper: false
+    - name: Install tfsec
+      run: |
+         wget -q https://github.com/aquasecurity/tfsec/releases/download/v1.28.9/tfsec_1.28.9_linux_amd64.tar.gz  --no-check-certificate 
+         tar -xzvf ./tfsec_1.28.9_linux_amd64.tar.gz 
+         rm -fr ./tfsec_1.28.9_linux_amd64.tar.gz
+    - name: Run tfsec scan
+      run: ./tfsec .
+    - name: Terraform Init
+      env:
+        TF_TOKEN_orsted_jfrog_io: ${{ secrets.JFROG_DEV_TOKEN }}
+      run: |
+        terraform --version
+        terraform init -backend-config="./config/backend/${{ github.event.inputs.environment }}.tfvars"
+    - name: Terraform Format
+      run: terraform fmt -check
+    - name: Terraform Plan
+      id: plan
+      run: |
+        set +e
+        terraform plan -detailed-exitcode -input=false -var-file="./config/app/${{ github.event.inputs.environment }}.tfvars.json" -out=tfplan
+        terraform_plan_exit_code=$?
+        set -e
+        if [ $terraform_plan_exit_code -eq 2 ]; then
+          echo "There are pending changes"
+          echo "pending-changes=true" >> $GITHUB_OUTPUT
+          exit 0
+        elif [ $terraform_plan_exit_code -eq 0 ]; then
+          echo "There are no pending changes"
+          echo "pending-changes=false" >> $GITHUB_OUTPUT
+          exit 0
+        else
+          echo "Terraform plan failed."
+          exit 1
+        fi
+    - name: Encrypt tfplan
+      if: steps.plan.outputs.pending-changes == 'true'
+      run: |
+        gpg --symmetric --cipher-algo AES256 --passphrase "${{ secrets.tfplan_passphrase }}" --batch --yes -o tfplan.gpg tfplan
+    - name: Store tfplan as artifact
+      if: steps.plan.outputs.pending-changes == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: tfplan
+        path: tfplan.gpg
+        retention-days: 1
+        overwrite: true
+    - name: Prepare plan summary
+      if: steps.plan.outputs.pending-changes == 'true'
+      run: |
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        terraform show -no-color tfplan >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+  apply:
+    if: needs.plan.outputs.pending-changes == 'true'
+    name: apply
+    needs: plan
+    runs-on: ubuntu-24.04
+    environment: approval
+    defaults:
+      run:
+        shell: bash
+    steps:
+    - name: Set environment variables
+      run: |
+        if [ "${{ github.event.inputs.environment }}" == "develop" ]; then
+          echo "AWS_ROLE=${{ secrets.AWS_ROLE_DEVELOP }}" >> $GITHUB_ENV
+        elif [ "${{ github.event.inputs.environment }}" == "sandbox" ]; then
+          echo "AWS_ROLE=${{ secrets.AWS_ROLE_SANDBOX }}" >> $GITHUB_ENV
+        elif [ "${{ github.event.inputs.environment }}" == "training" ]; then
+          echo "AWS_ROLE=${{ secrets.AWS_ROLE_TRAINING }}" >> $GITHUB_ENV
+        fi
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v3
+      with:
+        role-to-assume: ${{ env.AWS_ROLE }}
+        aws-region: ${{ secrets.AWS_REGION }}
+        mask-aws-account-id: true
+    - name: Checkout
+      uses: actions/checkout@v3
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.9.0
+        terraform_wrapper: false
+    - name: Terraform Init
+      env:
+        TF_TOKEN_orsted_jfrog_io: ${{ secrets.JFROG_DEV_TOKEN }}
+      run: |
+        terraform --version
+        terraform init -backend-config="./config/backend/${{ github.event.inputs.environment }}.tfvars"
+    - name: Read tfplan from artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: tfplan
+    - name: Decrypt tfplan
+      run: |
+        gpg --decrypt --passphrase "${{ secrets.tfplan_passphrase }}" --batch --yes -o tfplan tfplan.gpg
+    - name: Terraform Apply
+      run: terraform apply -input=false tfplan
