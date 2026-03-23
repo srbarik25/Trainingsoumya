@@ -53,6 +53,37 @@ jobs:
         mask-aws-account-id: true
     - name: Checkout
       uses: actions/checkout@v3
+
+    # - name: Get modules version
+    #   run: |
+    #       if [ ! -f MODULES_VERSION ]; then
+    #         echo "MODULES_VERSION file not found."
+    #         exit 1
+    #       fi
+    #       VERSION="$(tr -d '\n\r' < MODULES_VERSION)"
+    #       if [[ -z "$VERSION" ]]; then
+    #         echo "MODULES_VERSION file is empty."
+    #         exit 1
+    #       fi
+    #       echo "VERSION=${VERSION}" >> $GITHUB_ENV
+    # - name: Set up JFrog CLI
+    #   uses: jfrog/setup-jfrog-cli@v4
+    # - name: Configure JFrog Server
+    #   run: |
+    #     jfrog config add artifactory-server \
+    #       --url "${{ vars.JFROG_URL }}" \
+    #       --access-token "${{ secrets.JFROG_PROD_TOKEN }}" \
+    #       --interactive=false
+    #     jfrog -v
+    # - name: Download artifact from JFrog
+    #   run: |
+    #     jf rt dl "${{ vars.JFROG_PROD_REPO }}/bundle/bundle-${VERSION}.zip" "modules.zip"\
+    #       --server-id artifactory-server \
+    #       --flat
+    # - name: Unzip artifact
+    #   run: |
+    #     unzip modules.zip
+  
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
       with:
@@ -137,6 +168,37 @@ jobs:
         mask-aws-account-id: true
     - name: Checkout
       uses: actions/checkout@v3
+
+    # - name: Get modules version
+    #   run: |
+    #     if [ ! -f MODULES_VERSION ]; then
+    #       echo "MODULES_VERSION file not found."
+    #       exit 1
+    #     fi
+    #     VERSION="$(tr -d '\n\r' < MODULES_VERSION)"
+    #     if [[ -z "$VERSION" ]]; then
+    #       echo "MODULES_VERSION file is empty."
+    #       exit 1
+    #     fi
+    #     echo "VERSION=${VERSION}" >> $GITHUB_ENV
+    # - name: Set up JFrog CLI
+    #   uses: jfrog/setup-jfrog-cli@v4
+    # - name: Configure JFrog Server
+    #   run: |
+    #     jfrog config add artifactory-server \
+    #       --url "${{ vars.JFROG_URL }}" \
+    #       --access-token "${{ secrets.JFROG_PROD_TOKEN }}" \
+    #       --interactive=false
+    #     jfrog -v
+    # - name: Download artifact from JFrog
+    #   run: |
+    #     jf rt dl "${{ vars.JFROG_PROD_REPO }}/bundle/bundle-${VERSION}.zip" "modules.zip"\
+    #       --server-id artifactory-server \
+    #       --flat
+    # - name: Unzip artifact
+    #   run: |
+    #     unzip modules.zip
+ 
     - name: Setup Terraform
       uses: hashicorp/setup-terraform@v3
       with:
