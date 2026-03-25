@@ -1,0 +1,129 @@
+name: deployment
+on:
+  workflow_dispatch:
+    inputs:
+      jfrog_environment:
+        description: 'JFrog environment to use'
+        required: true
+        default: 'prod'
+        type: choice
+        options:
+          - non_prod
+          - prod
+permissions:
+  contents: read # Default for accessing the repo
+jobs:
+  publish-artifact:
+    name: publish-artifact
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Set environment variables
+        run: |
+          if [ "${{ github.event.inputs.jfrog_environment }}" == "non_prod" ]; then
+            echo "JFROG_ACCESS_TOKEN=${{ secrets.JFROG_NON_PROD_TOKEN }}" >> $GITHUB_ENV
+            echo "JFROG_REPO=${{ vars.JFROG_NON_PROD_REPO }}" >> $GITHUB_ENV
+          elif [ "${{ github.event.inputs.jfrog_environment }}" == "prod" ]; then
+            echo "JFROG_ACCESS_TOKEN=${{ secrets.JFROG_PROD_TOKEN }}" >> $GITHUB_ENV
+            echo "JFROG_REPO=${{ vars.JFROG_PROD_REPO }}" >> $GITHUB_ENV
+          fi
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up JFrog CLI
+        uses: jfrog/setup-jfrog-cli@v4
+      - name: Configure JFrog Server
+        run: |
+          jfrog config add artifactory-server \
+            --url "${{ vars.JFROG_URL }}" \
+            --access-token "${JFROG_ACCESS_TOKEN}" \
+            --interactive=false
+      - name: Prepare artifact version
+        run: |
+          if [ ! -f VERSION ]; then
+            echo "VERSION file not found."
+            exit 1
+          fi
+          base_version="$(tr -d '\n\r' < VERSION)"
+          if [[ -z "$base_version" ]]; then
+            echo "VERSION file is empty."
+            exit 1
+          fi
+          if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
+            full_version="$base_version"
+            echo "Release version ${full_version}"
+          else
+            branch_sanitized="${GITHUB_REF_NAME//\//-}"
+            full_version="${base_version}-${branch_sanitized}"
+            echo "Feature version ${full_version}"
+          fi
+          echo "VERSION=${full_version}" >> $GITHUB_ENV
+      - name: Publish Terraform modules to JFrog registry
+        run: |
+          NAMESPACE="odedwh"
+          PROVIDER="aws"
+          upload_count=0
+          skip_count=0
+
+          publish_module() {
+            local source_dir="$1"
+            local module_name="$2"
+            echo "Publishing: ${module_name} v${VERSION}"
+
+            if [[ "${GITHUB_REF_NAME}" == "main" ]]; then
+              local check_path="${JFROG_REPO}/${NAMESPACE}/${module_name}/${PROVIDER}/${VERSION}/*"
+              existing=$(jfrog rt s --server-id=artifactory-server "${check_path}")
+              if [[ -n "$existing" && "$existing" != "[]" ]]; then
+                echo "SKIP: ${module_name} v${VERSION} already exists."
+                skip_count=$((skip_count + 1))
+                return
+              fi
+            fi
+
+            local temp_dir
+            temp_dir=$(mktemp -d)
+            local publish_dir="${temp_dir}/${module_name}"
+            mkdir -p "${publish_dir}"
+            cp -a "${source_dir}/." "${publish_dir}/"
+
+            pushd "${publish_dir}" > /dev/null
+            mkdir -p .jfrog/projects
+            printf '%s\n' \
+              "version: 1" \
+              "type: terraform" \
+              "resolver:" \
+              "  serverId: artifactory-server" \
+              "  repo: ${JFROG_REPO}" \
+              "deployer:" \
+              "  serverId: artifactory-server" \
+              "  repo: ${JFROG_REPO}" \
+              > .jfrog/projects/terraform.yaml
+            jfrog tf p \
+              --namespace="${NAMESPACE}" \
+              --provider="${PROVIDER}" \
+              --tag="${VERSION}"
+            popd > /dev/null
+
+            rm -rf "${temp_dir}"
+            upload_count=$((upload_count + 1))
+            echo "Published: ${module_name} v${VERSION}"
+          }
+
+          for module_dir in modules/*/; do
+            module_name=$(basename "${module_dir}")
+            if ls "${module_dir}"*.tf 1>/dev/null 2>&1; then
+              publish_module "${module_dir}" "${module_name}"
+            else
+              for submodule_dir in "${module_dir}"*/; do
+                submodule_name=$(basename "${submodule_dir}")
+                publish_module "${submodule_dir}" "${module_name}-${submodule_name}"
+              done
+            fi
+          done
+
+          echo "Done: ${upload_count} published, ${skip_count} skipped."
+          if [[ ${upload_count} -eq 0 && ${skip_count} -eq 0 ]]; then
+            echo "ERROR: No modules found to publish."
+            exit 1
+          fi
