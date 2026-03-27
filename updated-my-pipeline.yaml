@@ -87,8 +87,7 @@ jobs:
             mkdir -p "${publish_dir}"
             cp -a "${source_dir}/." "${publish_dir}/"
 
-            pushd "${publish_dir}" > /dev/null
-            mkdir -p .jfrog/projects
+            mkdir -p "${temp_dir}/.jfrog/projects"
             printf '%s\n' \
               "version: 1" \
               "type: terraform" \
@@ -98,7 +97,9 @@ jobs:
               "deployer:" \
               "  serverId: artifactory-server" \
               "  repo: ${JFROG_REPO}" \
-              > .jfrog/projects/terraform.yaml
+              > "${temp_dir}/.jfrog/projects/terraform.yaml"
+
+            pushd "${publish_dir}" > /dev/null
             jfrog tf p \
               --namespace="${NAMESPACE}" \
               --provider="${PROVIDER}" \
