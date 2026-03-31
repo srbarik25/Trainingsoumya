@@ -1,0 +1,168 @@
+name: tenant-deployment-test
+on:
+  workflow_dispatch:
+    inputs:
+      client:
+        description: 'Select the client tenant to deploy (client1 = Tenant A, client2 = Tenant B)'
+        required: true
+        type: choice
+        options:
+          - client1
+          - client2
+      environment:
+        description: 'Select the target environment (develop = dev account, training = test account, prod = production account)'
+        required: true
+        default: 'develop'
+        type: choice
+        options:
+          - develop
+          - training
+          - prod
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+        working-directory: tenants/${{ github.event.inputs.client }}
+    outputs:
+      pending-changes: ${{ steps.plan.outputs.pending-changes }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+    - name: Set environment variables
+      run: |
+        AWS_ROLE=$(echo '${{ secrets.AWS_ROLES_MAP }}' | jq -r '.["${{ github.event.inputs.client }}"]["${{ github.event.inputs.environment }}"]')
+        if [ -z "$AWS_ROLE" ] || [ "$AWS_ROLE" == "null" ]; then
+          echo "No AWS role configured for client=${{ github.event.inputs.client }} env=${{ github.event.inputs.environment }}"
+          exit 1
+        fi
+        echo "AWS_ROLE=${AWS_ROLE}" >> $GITHUB_ENV
+        echo "[TEST] AWS_ROLE resolved: ${AWS_ROLE}"
+
+    - name: Check branch for environment
+      run: |
+        if [ "${{ github.event.inputs.environment }}" == "develop" ] && [ "${{ github.ref }}" != "refs/heads/develop" ]; then
+          echo "You can only deploy the develop branch to the develop environment."
+          exit 1
+        elif [ "${{ github.event.inputs.environment }}" == "training" ] && [ "${{ github.ref }}" != "refs/heads/training" ]; then
+          echo "You can only deploy the training branch to the training environment."
+          exit 1
+        elif [ "${{ github.event.inputs.environment }}" == "prod" ] && [ "${{ github.ref }}" != "refs/heads/main" ]; then
+          echo "You can only deploy the main branch to the prod environment."
+          exit 1
+        fi
+        echo "[TEST] Branch check passed for environment: ${{ github.event.inputs.environment }} on ref: ${{ github.ref }}"
+
+    - name: Configure AWS Credentials
+      run: |
+        echo "[TEST] Skipping real AWS auth — no account configured"
+        echo "[TEST] Would assume role: ${{ env.AWS_ROLE }}"
+        echo "[TEST] AWS region: us-east-1"
+
+    - name: Setup Terraform
+      run: echo "[TEST] Skipping Terraform install — no Terraform files present"
+
+    - name: Run tfsec scan
+      run: echo "[TEST] Skipping tfsec scan — no Terraform files present"
+
+    - name: Terraform Init
+      run: |
+        echo "[TEST] terraform init -backend-config=./config/backend/${{ github.event.inputs.environment }}.tfvars"
+        echo "[TEST] Backend config file contents:"
+        cat ./config/backend/${{ github.event.inputs.environment }}.tfvars
+
+    - name: Terraform Format
+      run: echo "[TEST] terraform fmt -check (skipped)"
+
+    - name: Terraform Plan
+      id: plan
+      run: |
+        echo "[TEST] terraform plan -var-file=./config/app/${{ github.event.inputs.environment }}.tfvars.json"
+        echo "[TEST] Var file contents:"
+        cat ./config/app/${{ github.event.inputs.environment }}.tfvars.json
+        echo ""
+        echo "[TEST] Simulating pending changes detected"
+        echo "pending-changes=true" >> $GITHUB_OUTPUT
+
+    - name: Encrypt tfplan
+      if: steps.plan.outputs.pending-changes == 'true'
+      run: |
+        echo "[TEST] Skipping GPG encrypt — creating dummy tfplan.gpg"
+        echo "dummy-tfplan-content-for-testing" > tfplan.gpg
+
+    - name: Store tfplan as artifact
+      if: steps.plan.outputs.pending-changes == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: tfplan-${{ github.event.inputs.client }}-${{ github.event.inputs.environment }}
+        path: tenants/${{ github.event.inputs.client }}/tfplan.gpg
+        retention-days: 1
+        overwrite: true
+
+    - name: Prepare plan summary
+      if: steps.plan.outputs.pending-changes == 'true'
+      run: |
+        echo "## Plan: ${{ github.event.inputs.client }} → ${{ github.event.inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+        echo "[TEST] terraform show -no-color tfplan (skipped — no real plan)" >> $GITHUB_STEP_SUMMARY
+        echo "Client  : ${{ github.event.inputs.client }}" >> $GITHUB_STEP_SUMMARY
+        echo "Env     : ${{ github.event.inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+        echo "Branch  : ${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+
+  apply:
+    if: needs.plan.outputs.pending-changes == 'true'
+    name: apply
+    needs: plan
+    runs-on: ubuntu-24.04
+    environment: approval
+    defaults:
+      run:
+        shell: bash
+        working-directory: tenants/${{ github.event.inputs.client }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Set environment variables
+      run: |
+        AWS_ROLE=$(echo '${{ secrets.AWS_ROLES_MAP }}' | jq -r '.["${{ github.event.inputs.client }}"]["${{ github.event.inputs.environment }}"]')
+        if [ -z "$AWS_ROLE" ] || [ "$AWS_ROLE" == "null" ]; then
+          echo "No AWS role configured for client=${{ github.event.inputs.client }} env=${{ github.event.inputs.environment }}"
+          exit 1
+        fi
+        echo "AWS_ROLE=${AWS_ROLE}" >> $GITHUB_ENV
+        echo "[TEST] AWS_ROLE resolved: ${AWS_ROLE}"
+
+    - name: Configure AWS Credentials
+      run: |
+        echo "[TEST] Skipping real AWS auth — no account configured"
+        echo "[TEST] Would assume role: ${{ env.AWS_ROLE }}"
+
+    - name: Setup Terraform
+      run: echo "[TEST] Skipping Terraform install — no Terraform files present"
+
+    - name: Terraform Init
+      run: |
+        echo "[TEST] terraform init -backend-config=./config/backend/${{ github.event.inputs.environment }}.tfvars"
+        echo "[TEST] Backend config file contents:"
+        cat ./config/backend/${{ github.event.inputs.environment }}.tfvars
+
+    - name: Read tfplan from artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: tfplan-${{ github.event.inputs.client }}-${{ github.event.inputs.environment }}
+        path: tenants/${{ github.event.inputs.client }}
+
+    - name: Decrypt tfplan
+      run: |
+        echo "[TEST] Skipping GPG decrypt — reading dummy tfplan.gpg"
+        cat tfplan.gpg
+
+    - name: Terraform Apply
+      run: |
+        echo "[TEST] terraform apply -input=false tfplan"
+        echo "[TEST] Apply complete for client=${{ github.event.inputs.client }} env=${{ github.event.inputs.environment }}"
