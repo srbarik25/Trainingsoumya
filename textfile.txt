@@ -1,6 +1,9 @@
 Prerequsites to set before ran the pipeline 
 
 1: Create a secrets map value for aws credentials using below format 
+key name: AWS_ROLES_MAP
+
+value:
 
 {
   "client1": {
