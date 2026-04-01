@@ -1,0 +1,169 @@
+name: tenant-deployment
+on:
+  workflow_dispatch:
+    inputs:
+      client:
+        description: 'Select the client tenant to deploy (client1 = Tenant A, client2 = Tenant B)'
+        required: true
+        type: choice
+        options:
+          - client1
+          - client2
+      environment:
+        description: 'Select the target environment (develop = dev account, training = test account, prod = production account)'
+        required: true
+        default: 'develop'
+        type: choice
+        options:
+          - develop
+          - training
+          - prod
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+        working-directory: tenants/${{ github.event.inputs.client }}
+    outputs:
+      pending-changes: ${{ steps.plan.outputs.pending-changes }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+    - name: Set environment variables
+      run: |
+        AWS_ROLE=$(echo '${{ secrets.AWS_ROLES_MAP }}' | jq -r '.["${{ github.event.inputs.client }}"]["${{ github.event.inputs.environment }}"]')
+        if [ -z "$AWS_ROLE" ] || [ "$AWS_ROLE" == "null" ]; then
+          echo "No AWS role configured for client=${{ github.event.inputs.client }} env=${{ github.event.inputs.environment }}"
+          exit 1
+        fi
+        echo "AWS_ROLE=${AWS_ROLE}" >> $GITHUB_ENV
+    - name: Check branch for environment
+      run: |
+        if [ "${{ github.event.inputs.environment }}" == "develop" ] && [ "${{ github.ref }}" != "refs/heads/develop" ]; then
+          echo "You can only deploy the develop branch to the develop environment."
+          exit 1
+        elif [ "${{ github.event.inputs.environment }}" == "training" ] && [ "${{ github.ref }}" != "refs/heads/training" ]; then
+          echo "You can only deploy the training branch to the training environment."
+          exit 1
+        elif [ "${{ github.event.inputs.environment }}" == "prod" ] && [ "${{ github.ref }}" != "refs/heads/main" ]; then
+          echo "You can only deploy the main branch to the prod environment."
+          exit 1
+        fi
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v3
+      with:
+        role-to-assume: ${{ env.AWS_ROLE }}
+        aws-region: ${{ secrets.AWS_REGION }}
+        mask-aws-account-id: true
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.9.0
+        terraform_wrapper: false
+    - name: Install tfsec
+      run: |
+        wget -q https://github.com/aquasecurity/tfsec/releases/download/v1.28.9/tfsec_1.28.9_linux_amd64.tar.gz --no-check-certificate
+        tar -xzvf ./tfsec_1.28.9_linux_amd64.tar.gz
+        rm -fr ./tfsec_1.28.9_linux_amd64.tar.gz
+    - name: Run tfsec scan
+      run: ./tfsec .
+    - name: Terraform Init
+      env:
+        TF_TOKEN_orsted_jfrog_io: ${{ secrets.JFROG_DEV_TOKEN }}
+      run: |
+        terraform --version
+        terraform init -backend-config="./config/backend/${{ github.event.inputs.environment }}.tfvars"
+    - name: Terraform Format
+      run: terraform fmt -check
+    - name: Terraform Plan
+      id: plan
+      run: |
+        set +e
+        terraform plan -detailed-exitcode -input=false -var-file="./config/app/${{ github.event.inputs.environment }}.tfvars.json" -out=tfplan
+        terraform_plan_exit_code=$?
+        set -e
+        if [ $terraform_plan_exit_code -eq 2 ]; then
+          echo "There are pending changes"
+          echo "pending-changes=true" >> $GITHUB_OUTPUT
+          exit 0
+        elif [ $terraform_plan_exit_code -eq 0 ]; then
+          echo "There are no pending changes"
+          echo "pending-changes=false" >> $GITHUB_OUTPUT
+          exit 0
+        else
+          echo "Terraform plan failed."
+          exit 1
+        fi
+    - name: Encrypt tfplan
+      if: steps.plan.outputs.pending-changes == 'true'
+      run: |
+        gpg --symmetric --cipher-algo AES256 --passphrase "${{ secrets.tfplan_passphrase }}" --batch --yes -o tfplan.gpg tfplan
+    - name: Store tfplan as artifact
+      if: steps.plan.outputs.pending-changes == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: tfplan-${{ github.event.inputs.client }}-${{ github.event.inputs.environment }}
+        path: tenants/${{ github.event.inputs.client }}/tfplan.gpg
+        retention-days: 1
+        overwrite: true
+    - name: Prepare plan summary
+      if: steps.plan.outputs.pending-changes == 'true'
+      run: |
+        echo "## Plan: ${{ github.event.inputs.client }} → ${{ github.event.inputs.environment }}" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        terraform show -no-color tfplan >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+
+  apply:
+    if: needs.plan.outputs.pending-changes == 'true'
+    name: apply
+    needs: plan
+    runs-on: ubuntu-24.04
+    environment: approval
+    defaults:
+      run:
+        shell: bash
+        working-directory: tenants/${{ github.event.inputs.client }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+    - name: Set environment variables
+      run: |
+        AWS_ROLE=$(echo '${{ secrets.AWS_ROLES_MAP }}' | jq -r '.["${{ github.event.inputs.client }}"]["${{ github.event.inputs.environment }}"]')
+        if [ -z "$AWS_ROLE" ] || [ "$AWS_ROLE" == "null" ]; then
+          echo "No AWS role configured for client=${{ github.event.inputs.client }} env=${{ github.event.inputs.environment }}"
+          exit 1
+        fi
+        echo "AWS_ROLE=${AWS_ROLE}" >> $GITHUB_ENV
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v3
+      with:
+        role-to-assume: ${{ env.AWS_ROLE }}
+        aws-region: ${{ secrets.AWS_REGION }}
+        mask-aws-account-id: true
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: 1.9.0
+        terraform_wrapper: false
+    - name: Terraform Init
+      env:
+        TF_TOKEN_orsted_jfrog_io: ${{ secrets.JFROG_DEV_TOKEN }}
+      run: |
+        terraform --version
+        terraform init -backend-config="./config/backend/${{ github.event.inputs.environment }}.tfvars"
+    - name: Read tfplan from artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: tfplan-${{ github.event.inputs.client }}-${{ github.event.inputs.environment }}
+        path: tenants/${{ github.event.inputs.client }}
+    - name: Decrypt tfplan
+      run: |
+        gpg --decrypt --passphrase "${{ secrets.tfplan_passphrase }}" --batch --yes -o tfplan tfplan.gpg
+    - name: Terraform Apply
+      run: terraform apply -input=false tfplan
