@@ -1,12 +1,16 @@
-Hi, thanks for the review comment. I have two approaches in mind to address this — wanted to check which one you'd prefer before making the changes:
+Prerequsites to set before ran the pipeline 
 
-Option 1 — Extract to a separate shell script
-Move all the bash logic from the Publish Terraform modules to JFrog registry step into .github/scripts/publish_modules.sh with proper section comments. The pipeline step would then just call:
-bash .github/scripts/publish_modules.sh
-Pros: independently testable locally, can be linted with shellcheck, cleaner YAML.
+1: Create a secrets map value for aws credentials using below format 
 
-Option 2 — Keep inline in the pipeline with comments
-Keep the bash inside the run: block as-is but add # section comments to explain each part (constants, publish_module() function purpose, main loop logic).
-Pros: everything stays in one file, easier to follow without switching files.
-
-Could you let me know which approach you'd like me to go with? Happy to proceed with either.
+{
+  "client1": {
+    "develop":  "arn:aws:iam::111111111111:role/client1-develop-role",
+    "training": "arn:aws:iam::111111111112:role/client1-training-role",
+    "prod":     "arn:aws:iam::111111111113:role/client1-prod-role"
+  },
+  "client2": {
+    "develop":  "arn:aws:iam::222222222221:role/client2-develop-role",
+    "training": "arn:aws:iam::222222222222:role/client2-training-role",
+    "prod":     "arn:aws:iam::222222222223:role/client2-prod-role"
+  }
+}
