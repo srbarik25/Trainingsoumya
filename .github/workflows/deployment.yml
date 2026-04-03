@@ -35,8 +35,10 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v3
     - name: Set environment variables
+      env:
+        AWS_ROLES_MAP: ${{ secrets.AWS_ROLES_MAP }}
       run: |
-        AWS_ROLE=$(echo '${{ secrets.AWS_ROLES_MAP }}' | jq -r '.["${{ github.event.inputs.client }}"]["${{ github.event.inputs.environment }}"]')
+        AWS_ROLE=$(echo "${AWS_ROLES_MAP}" | jq -r --arg client "${{ github.event.inputs.client }}" --arg env "${{ github.event.inputs.environment }}" '.[$client][$env]')
         if [ -z "$AWS_ROLE" ] || [ "$AWS_ROLE" == "null" ]; then
           echo "No AWS role configured for client=${{ github.event.inputs.client }} env=${{ github.event.inputs.environment }}"
           exit 1
@@ -133,8 +135,10 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v3
     - name: Set environment variables
+      env:
+        AWS_ROLES_MAP: ${{ secrets.AWS_ROLES_MAP }}
       run: |
-        AWS_ROLE=$(echo '${{ secrets.AWS_ROLES_MAP }}' | jq -r '.["${{ github.event.inputs.client }}"]["${{ github.event.inputs.environment }}"]')
+        AWS_ROLE=$(echo "${AWS_ROLES_MAP}" | jq -r --arg client "${{ github.event.inputs.client }}" --arg env "${{ github.event.inputs.environment }}" '.[$client][$env]')
         if [ -z "$AWS_ROLE" ] || [ "$AWS_ROLE" == "null" ]; then
           echo "No AWS role configured for client=${{ github.event.inputs.client }} env=${{ github.event.inputs.environment }}"
           exit 1
