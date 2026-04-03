@@ -17,3 +17,7 @@ value:
     "prod":     "arn:aws:iam::222222222223:role/client2-prod-role"
   }
 }
+
+
+
+{"client1":{"develop":"arn:aws:iam::0218915789:role/service-catalog/github/ors-data-ecosystem/aws-dwh-platform-terraform/GH-aws-dwh-platform-terraform_06db670c88d5","training":"arn:aws:iam::ACCOUNT_ID:role/ROLE_NAME","prod":"arn:aws:iam::ACCOUNT_ID:role/ROLE_NAME"},"client2":{"develop":"arn:aws:iam::ACCOUNT_ID:role/ROLE_NAME","training":"arn:aws:iam::ACCOUNT_ID:role/ROLE_NAME","prod":"arn:aws:iam::ACCOUNT_ID:role/ROLE_NAME"}}
